@@ -1,0 +1,11 @@
+.git
+bin/
+test/
+*.zip
+*.bak
+*.tmp
+*.out
+*.test
+docs/
+xolu/.git
+xolu/bin

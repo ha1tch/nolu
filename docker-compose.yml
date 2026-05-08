@@ -1,0 +1,474 @@
+# nolu demo infrastructure
+#
+# Four demos, one compose file. Use --profile to select:
+#
+#   docker compose --profile demo1 up -d    (three xolu instances, memory registry)
+#   docker compose --profile demo2 up -d    (one multi-tenant xolu, strict mode, iolu db init)
+#   docker compose --profile demo3 up -d    (XoluRegistry, 3-node NATS, three xolus)
+#   docker compose --profile demo4 up -d    (XoluRegistry, 5-node NATS, five xolus, multi-tenant)
+#
+# Run via Makefile:
+#
+#   make run-demo1       make run-docker-demo2
+#   make run-demo2       make run-docker-demo3
+#   make run-demo3       make run-docker-demo4
+#   make run-demo4
+#
+# Tear down a specific demo:
+#   docker compose --profile demo3 down -v
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  nolu-net:
+    driver: bridge
+
+volumes:
+  # Demo 1
+  xolu-vendocorp-data:
+  xolu-retailchain-data:
+  xolu-serviceco-data:
+  # Demo 2
+  xolu-hub-data:
+  # Demo 3
+  xolu-d3-vendocorp-data:
+  xolu-d3-retailchain-data:
+  xolu-d3-serviceco-data:
+  xolu-d3-registry-data:
+  nats-d3-1-data:
+  nats-d3-2-data:
+  nats-d3-3-data:
+  # Demo 4
+  xolu-d4-eu-data:
+  xolu-d4-us-data:
+  xolu-d4-apac-data:
+  xolu-d4-service-data:
+  xolu-d4-registry-data:
+  nats-d4-1-data:
+  nats-d4-2-data:
+  nats-d4-3-data:
+  nats-d4-4-data:
+  nats-d4-5-data:
+
+services:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEMO 1 — Three separate xolu instances, one org each, memory registry
+  # ════════════════════════════════════════════════════════════════════════════
+
+  xolu-vendocorp:
+    profiles: [demo1]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/vendocorp.db
+      OLU_PORT: "9090"
+      OLU_LOG_LEVEL: warn
+    ports: ["9090:9090"]
+    volumes: [xolu-vendocorp-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  xolu-retailchain:
+    profiles: [demo1]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/retailchain.db
+      OLU_PORT: "9091"
+      OLU_LOG_LEVEL: warn
+    ports: ["9091:9091"]
+    volumes: [xolu-retailchain-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  xolu-serviceco:
+    profiles: [demo1]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/serviceco.db
+      OLU_PORT: "9092"
+      OLU_LOG_LEVEL: warn
+    ports: ["9092:9092"]
+    volumes: [xolu-serviceco-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  demo1:
+    profiles: [demo1]
+    build: {context: ., dockerfile: Dockerfile}
+    entrypoint: ["/usr/local/bin/nolu-demo1"]
+    command: ["-bus=memory", "-vendo=http://xolu-vendocorp:9090",
+              "-retail=http://xolu-retailchain:9091", "-service=http://xolu-serviceco:9092"]
+    networks: [nolu-net]
+    depends_on: [xolu-vendocorp, xolu-retailchain, xolu-serviceco]
+    restart: "no"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEMO 2 — One multi-tenant xolu instance, strict mode, iolu db init
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # iolu db init: creates the database and registers tenants before xolu starts.
+  # Uses service_completed_successfully so xolu only starts after init exits 0.
+  xolu-hub-init:
+    profiles: [demo2]
+    build:
+      context: ./xolu
+      dockerfile: ../Dockerfile.iolu
+    command:
+      - db
+      - init
+      - --db=/data/hub.db
+      - --graph
+      - --tenant=vendocorp:1
+      - --tenant=retailchain:2
+      - --tenant=serviceco:3
+    volumes: [xolu-hub-data:/data]
+    networks: [nolu-net]
+    restart: "no"
+
+  xolu-hub:
+    profiles: [demo2]
+    depends_on:
+      xolu-hub-init:
+        condition: service_completed_successfully
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/hub.db
+      OLU_PORT: "9090"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: strict
+      OLU_TENANT_AUTO_REGISTER: "false"
+    ports: ["9090:9090"]
+    volumes: [xolu-hub-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  demo2:
+    profiles: [demo2]
+    build: {context: ., dockerfile: Dockerfile}
+    entrypoint: ["/usr/local/bin/nolu-demo2"]
+    command: ["-xolu=http://xolu-hub:9090"]
+    networks: [nolu-net]
+    depends_on:
+      xolu-hub:
+        condition: service_started
+    restart: "no"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEMO 3 — XoluRegistry (durable), 3-node NATS, three org xolus + registry
+  # ════════════════════════════════════════════════════════════════════════════
+
+  nats-d3-1:
+    profiles: [demo3]
+    image: nats:2.10-alpine
+    command: ["--name=nats-d3-1", "--cluster_name=nolu-demo3", "--jetstream",
+              "--store_dir=/data", "--port=4222", "--http_port=8222",
+              "--cluster=nats://0.0.0.0:6222",
+              "--routes=nats://nats-d3-2:6222,nats://nats-d3-3:6222", "--logtime"]
+    ports: ["4222:4222", "8222:8222"]
+    volumes: [nats-d3-1-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  nats-d3-2:
+    profiles: [demo3]
+    image: nats:2.10-alpine
+    command: ["--name=nats-d3-2", "--cluster_name=nolu-demo3", "--jetstream",
+              "--store_dir=/data", "--port=4223",
+              "--cluster=nats://0.0.0.0:6222",
+              "--routes=nats://nats-d3-1:6222,nats://nats-d3-3:6222", "--logtime"]
+    ports: ["4223:4223"]
+    volumes: [nats-d3-2-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  nats-d3-3:
+    profiles: [demo3]
+    image: nats:2.10-alpine
+    command: ["--name=nats-d3-3", "--cluster_name=nolu-demo3", "--jetstream",
+              "--store_dir=/data", "--port=4224",
+              "--cluster=nats://0.0.0.0:6222",
+              "--routes=nats://nats-d3-1:6222,nats://nats-d3-2:6222", "--logtime"]
+    ports: ["4224:4224"]
+    volumes: [nats-d3-3-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  xolu-d3-vendocorp:
+    profiles: [demo3]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/vendocorp.db
+      OLU_PORT: "9090"
+      OLU_LOG_LEVEL: warn
+    ports: ["9090:9090"]
+    volumes: [xolu-d3-vendocorp-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  xolu-d3-retailchain:
+    profiles: [demo3]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/retailchain.db
+      OLU_PORT: "9091"
+      OLU_LOG_LEVEL: warn
+    ports: ["9091:9091"]
+    volumes: [xolu-d3-retailchain-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  xolu-d3-serviceco:
+    profiles: [demo3]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/serviceco.db
+      OLU_PORT: "9092"
+      OLU_LOG_LEVEL: warn
+    ports: ["9092:9092"]
+    volumes: [xolu-d3-serviceco-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  # Registry xolu uses path mode — single tenant (nolu_registry) created automatically.
+  xolu-d3-registry:
+    profiles: [demo3]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/registry.db
+      OLU_PORT: "9093"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: path
+      OLU_TENANT_AUTO_REGISTER: "true"
+    ports: ["9093:9093"]
+    volumes: [xolu-d3-registry-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  demo3:
+    profiles: [demo3]
+    build: {context: ., dockerfile: Dockerfile}
+    entrypoint: ["/usr/local/bin/nolu-demo3"]
+    command:
+      - "-vendo=http://xolu-d3-vendocorp:9090"
+      - "-retail=http://xolu-d3-retailchain:9091"
+      - "-service=http://xolu-d3-serviceco:9092"
+      - "-registry=http://xolu-d3-registry:9093"
+      - "-nats=nats://nats-d3-1:4222"
+    networks: [nolu-net]
+    depends_on: [nats-d3-1, nats-d3-2, nats-d3-3,
+                 xolu-d3-vendocorp, xolu-d3-retailchain,
+                 xolu-d3-serviceco, xolu-d3-registry]
+    restart: "no"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEMO 4 — Large topology: 5 xolu instances, multi-tenant, 5-node NATS
+  # ════════════════════════════════════════════════════════════════════════════
+
+  nats-d4-1:
+    profiles: [demo4]
+    image: nats:2.10-alpine
+    command: ["--name=nats-d4-1", "--cluster_name=nolu-demo4", "--jetstream",
+              "--store_dir=/data", "--port=4222", "--http_port=8222",
+              "--cluster=nats://0.0.0.0:6222",
+              "--routes=nats://nats-d4-2:6222,nats://nats-d4-3:6222,nats://nats-d4-4:6222,nats://nats-d4-5:6222",
+              "--logtime"]
+    ports: ["4222:4222", "8222:8222"]
+    volumes: [nats-d4-1-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  nats-d4-2:
+    profiles: [demo4]
+    image: nats:2.10-alpine
+    command: ["--name=nats-d4-2", "--cluster_name=nolu-demo4", "--jetstream",
+              "--store_dir=/data", "--port=4223",
+              "--cluster=nats://0.0.0.0:6222",
+              "--routes=nats://nats-d4-1:6222,nats://nats-d4-3:6222,nats://nats-d4-4:6222,nats://nats-d4-5:6222",
+              "--logtime"]
+    ports: ["4223:4223"]
+    volumes: [nats-d4-2-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  nats-d4-3:
+    profiles: [demo4]
+    image: nats:2.10-alpine
+    command: ["--name=nats-d4-3", "--cluster_name=nolu-demo4", "--jetstream",
+              "--store_dir=/data", "--port=4224",
+              "--cluster=nats://0.0.0.0:6222",
+              "--routes=nats://nats-d4-1:6222,nats://nats-d4-2:6222,nats://nats-d4-4:6222,nats://nats-d4-5:6222",
+              "--logtime"]
+    ports: ["4224:4224"]
+    volumes: [nats-d4-3-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  nats-d4-4:
+    profiles: [demo4]
+    image: nats:2.10-alpine
+    command: ["--name=nats-d4-4", "--cluster_name=nolu-demo4", "--jetstream",
+              "--store_dir=/data", "--port=4225",
+              "--cluster=nats://0.0.0.0:6222",
+              "--routes=nats://nats-d4-1:6222,nats://nats-d4-2:6222,nats://nats-d4-3:6222,nats://nats-d4-5:6222",
+              "--logtime"]
+    ports: ["4225:4225"]
+    volumes: [nats-d4-4-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  nats-d4-5:
+    profiles: [demo4]
+    image: nats:2.10-alpine
+    command: ["--name=nats-d4-5", "--cluster_name=nolu-demo4", "--jetstream",
+              "--store_dir=/data", "--port=4226",
+              "--cluster=nats://0.0.0.0:6222",
+              "--routes=nats://nats-d4-1:6222,nats://nats-d4-2:6222,nats://nats-d4-3:6222,nats://nats-d4-4:6222",
+              "--logtime"]
+    ports: ["4226:4226"]
+    volumes: [nats-d4-5-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  # EU hub: strict mode, iolu db init creates database and registers tenants
+  xolu-d4-eu-init:
+    profiles: [demo4]
+    build:
+      context: ./xolu
+      dockerfile: ../Dockerfile.iolu
+    command: [db, init, --db=/data/eu.db, --graph,
+              --tenant=euro-vendo:1, --tenant=euro-retail:2]
+    volumes: [xolu-d4-eu-data:/data]
+    networks: [nolu-net]
+    restart: "no"
+
+  xolu-d4-eu:
+    profiles: [demo4]
+    depends_on:
+      xolu-d4-eu-init:
+        condition: service_completed_successfully
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/eu.db
+      OLU_PORT: "9090"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: strict
+      OLU_TENANT_AUTO_REGISTER: "false"
+    ports: ["9090:9090"]
+    volumes: [xolu-d4-eu-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  # US hub
+  xolu-d4-us-init:
+    profiles: [demo4]
+    build:
+      context: ./xolu
+      dockerfile: ../Dockerfile.iolu
+    command: [db, init, --db=/data/us.db, --graph,
+              --tenant=us-vendo:1, --tenant=us-retail:2]
+    volumes: [xolu-d4-us-data:/data]
+    networks: [nolu-net]
+    restart: "no"
+
+  xolu-d4-us:
+    profiles: [demo4]
+    depends_on:
+      xolu-d4-us-init:
+        condition: service_completed_successfully
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/us.db
+      OLU_PORT: "9091"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: strict
+      OLU_TENANT_AUTO_REGISTER: "false"
+    ports: ["9091:9091"]
+    volumes: [xolu-d4-us-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  # APAC hub
+  xolu-d4-apac-init:
+    profiles: [demo4]
+    build:
+      context: ./xolu
+      dockerfile: ../Dockerfile.iolu
+    command: [db, init, --db=/data/apac.db, --graph,
+              --tenant=apac-vendo:1, --tenant=apac-retail:2]
+    volumes: [xolu-d4-apac-data:/data]
+    networks: [nolu-net]
+    restart: "no"
+
+  xolu-d4-apac:
+    profiles: [demo4]
+    depends_on:
+      xolu-d4-apac-init:
+        condition: service_completed_successfully
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/apac.db
+      OLU_PORT: "9092"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: strict
+      OLU_TENANT_AUTO_REGISTER: "false"
+    ports: ["9092:9092"]
+    volumes: [xolu-d4-apac-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  # GlobalService: single-tenant, no init needed
+  xolu-d4-service:
+    profiles: [demo4]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/service.db
+      OLU_PORT: "9093"
+      OLU_LOG_LEVEL: warn
+    ports: ["9093:9093"]
+    volumes: [xolu-d4-service-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  # Registry: path mode, nolu_registry tenant auto-created on first access
+  xolu-d4-registry:
+    profiles: [demo4]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/registry.db
+      OLU_PORT: "9094"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: path
+      OLU_TENANT_AUTO_REGISTER: "true"
+    ports: ["9094:9094"]
+    volumes: [xolu-d4-registry-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  demo4:
+    profiles: [demo4]
+    build: {context: ., dockerfile: Dockerfile}
+    entrypoint: ["/usr/local/bin/nolu-demo4"]
+    command:
+      - "-eu=http://xolu-d4-eu:9090"
+      - "-us=http://xolu-d4-us:9091"
+      - "-apac=http://xolu-d4-apac:9092"
+      - "-service=http://xolu-d4-service:9093"
+      - "-registry=http://xolu-d4-registry:9094"
+      - "-nats=nats://nats-d4-1:4222"
+    networks: [nolu-net]
+    depends_on: [nats-d4-1, nats-d4-2, nats-d4-3, nats-d4-4, nats-d4-5,
+                 xolu-d4-eu, xolu-d4-us, xolu-d4-apac,
+                 xolu-d4-service, xolu-d4-registry]
+    restart: "no"
