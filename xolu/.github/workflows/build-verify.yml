@@ -1,0 +1,63 @@
+name: Build Verification
+
+on:
+  pull_request:
+    branches: [main]
+
+env:
+  GONOSUMDB: '*'
+  GOFLAGS: -mod=mod
+
+jobs:
+  verify-builds:
+    name: Verify ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Core platforms - must pass
+          # Note: CGO_ENABLED=0 means no SQLite support in these builds
+          # For SQLite support, use Docker image or build locally with CGO
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          
+          # BSD platforms
+          - goos: freebsd
+            goarch: amd64
+          - goos: openbsd
+            goarch: amd64
+          - goos: netbsd
+            goarch: amd64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Verify builds
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          echo "Building olu for ${{ matrix.goos }}/${{ matrix.goarch }} (no CGO)..."
+          go build -o /dev/null ./cmd/olu
+          echo "✓ olu build successful"
+          
+          echo "Building olu-migrate for ${{ matrix.goos }}/${{ matrix.goarch }}..."
+          go build -o /dev/null ./cmd/olu-migrate
+          echo "✓ olu-migrate build successful"

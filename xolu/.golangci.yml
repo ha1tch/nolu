@@ -1,0 +1,11 @@
+issues:
+  exclude-rules:
+    # errcheck in tests generates excessive noise for setup/teardown calls
+    # where ignoring errors is intentional (e.g. seeding test data).
+    - path: _test\.go
+      linters:
+        - errcheck
+    # gosimple nil+len checks in tests are harmless defensive assertions.
+    - path: _test\.go
+      linters:
+        - gosimple

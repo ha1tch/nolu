@@ -1,0 +1,283 @@
+# Olu Docker Compose with profiles for different configurations
+#
+# Usage:
+#   docker compose up                    # Basic: memory cache, no auth
+#   docker compose --profile redis up    # With Redis cache
+#   docker compose --profile full up     # All features: Redis, auth, metrics, FTS
+#   docker compose --profile test up     # Run integration tests
+#
+# Test endpoints:
+#   curl http://localhost:9090/health
+#   curl http://localhost:9090/metrics
+#   curl -H "Authorization: Bearer <token>" http://localhost:9090/api/v1/users
+#   curl -H "X-API-Key: test-key-1" http://localhost:9090/api/v1/users
+
+services:
+  # ==========================================================================
+  # Basic Olu - memory cache, no auth
+  # ==========================================================================
+  olu:
+    build: .
+    ports:
+      - "9090:9090"
+    environment:
+      - OLU_HOST=0.0.0.0
+      - OLU_PORT=9090
+      - OLU_STORAGE_TYPE=jsonfile
+      - OLU_CACHE_TYPE=memory
+      - OLU_CACHE_TTL=300
+      - OLU_GRAPH_MODE=flat
+      - OLU_GRAPH_CYCLE_DETECTION=warn
+      - OLU_FULLTEXT_ENABLED=false
+      - OLU_CASCADING_DELETE=false
+      - OLU_AUTH_TYPE=none
+      - OLU_METRICS_ENABLED=true
+      - OLU_DEBUG=false
+    volumes:
+      - ./data:/app/data
+      - ./schema:/app/schema
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Olu with Redis cache
+  # ==========================================================================
+  olu-redis:
+    build: .
+    ports:
+      - "9090:9090"
+    environment:
+      - OLU_HOST=0.0.0.0
+      - OLU_PORT=9090
+      - OLU_STORAGE_TYPE=jsonfile
+      - OLU_CACHE_TYPE=redis
+      - OLU_CACHE_TTL=300
+      - OLU_REDIS_HOST=redis
+      - OLU_REDIS_PORT=6379
+      - OLU_GRAPH_MODE=flat
+      - OLU_GRAPH_CYCLE_DETECTION=warn
+      - OLU_FULLTEXT_ENABLED=false
+      - OLU_AUTH_TYPE=none
+      - OLU_METRICS_ENABLED=true
+    volumes:
+      - ./data:/app/data
+      - ./schema:/app/schema
+    depends_on:
+      - redis
+    restart: unless-stopped
+    profiles:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    profiles:
+      - redis
+      - full
+      - test
+
+  # ==========================================================================
+  # Olu with all features: Redis, SQLite+FTS, Auth, Rate Limiting, Metrics
+  # ==========================================================================
+  olu-full:
+    build: .
+    ports:
+      - "9090:9090"
+    environment:
+      # Server
+      - OLU_HOST=0.0.0.0
+      - OLU_PORT=9090
+      # Storage - SQLite with full-text search
+      - OLU_STORAGE_TYPE=sqlite
+      - OLU_DB_PATH=/app/data/olu.db
+      - OLU_FULLTEXT_ENABLED=true
+      # Cache - Redis
+      - OLU_CACHE_TYPE=redis
+      - OLU_CACHE_TTL=300
+      - OLU_REDIS_HOST=redis
+      - OLU_REDIS_PORT=6379
+      # Graph
+      - OLU_GRAPH_MODE=flat
+      - OLU_GRAPH_CYCLE_DETECTION=error
+      # Authentication - API keys (simpler to test than JWT)
+      - OLU_AUTH_TYPE=apikey
+      - OLU_API_KEYS=test-key-1,test-key-2,admin-key
+      # Rate limiting
+      - OLU_RATE_LIMIT_ENABLED=true
+      - OLU_RATE_LIMIT_RATE=100
+      - OLU_RATE_LIMIT_WINDOW=60
+      - OLU_RATE_LIMIT_BY_KEY=true
+      # Metrics
+      - OLU_METRICS_ENABLED=true
+      # Multi-tenancy
+      - OLU_TENANT_MODE=path
+    volumes:
+      - ./data:/app/data
+      - ./schema:/app/schema
+    depends_on:
+      - redis
+    restart: unless-stopped
+    profiles:
+      - full
+
+  # ==========================================================================
+  # Olu configured for integration testing
+  # ==========================================================================
+  olu-test:
+    build: .
+    ports:
+      - "9090:9090"
+    environment:
+      - OLU_HOST=0.0.0.0
+      - OLU_PORT=9090
+      - OLU_STORAGE_TYPE=sqlite
+      - OLU_DB_PATH=/app/data/test.db
+      - OLU_FULLTEXT_ENABLED=true
+      - OLU_CACHE_TYPE=redis
+      - OLU_REDIS_HOST=redis
+      - OLU_REDIS_PORT=6379
+      - OLU_GRAPH_MODE=flat
+      - OLU_AUTH_TYPE=apikey
+      - OLU_API_KEYS=test-key
+      - OLU_RATE_LIMIT_ENABLED=true
+      - OLU_RATE_LIMIT_RATE=100
+      - OLU_RATE_LIMIT_WINDOW=10
+      - OLU_METRICS_ENABLED=true
+      - OLU_TENANT_MODE=path
+      - OLU_DEBUG=true
+    volumes:
+      - test_data:/app/data
+      - ./schema:/app/schema
+    depends_on:
+      - redis
+    profiles:
+      - test
+
+  # ==========================================================================
+  # Integration test runner
+  # ==========================================================================
+  test-runner:
+    image: curlimages/curl:latest
+    depends_on:
+      - olu-test
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        echo "Waiting for olu-test to be ready..."
+        sleep 3
+        
+        echo ""
+        echo "========================================"
+        echo "Running Olu Integration Tests"
+        echo "========================================"
+        
+        PASS=0
+        FAIL=0
+        API_KEY="test-key"
+        BASE="http://olu-test:9090"
+        
+        # Helper function
+        test_endpoint() {
+          NAME="$$1"
+          EXPECTED="$$2"
+          shift 2
+          RESULT=$$(curl -s -o /dev/null -w "%{http_code}" "$$@")
+          if [ "$$RESULT" = "$$EXPECTED" ]; then
+            echo "✓ $$NAME ($$RESULT)"
+            PASS=$$((PASS + 1))
+          else
+            echo "✗ $$NAME - expected $$EXPECTED, got $$RESULT"
+            FAIL=$$((FAIL + 1))
+          fi
+        }
+        
+        echo ""
+        echo "--- Health & System Endpoints ---"
+        test_endpoint "Health check" "200" $$BASE/health
+        test_endpoint "Version" "200" $$BASE/version
+        test_endpoint "Metrics (Prometheus)" "200" $$BASE/metrics
+        
+        echo ""
+        echo "--- Authentication ---"
+        test_endpoint "No auth rejected" "401" $$BASE/api/v1/users
+        test_endpoint "Bad API key rejected" "401" -H "X-API-Key: wrong" $$BASE/api/v1/users
+        test_endpoint "Valid API key accepted" "200" -H "X-API-Key: $$API_KEY" $$BASE/api/v1/users
+        
+        echo ""
+        echo "--- Entity CRUD ---"
+        # Create first entity
+        CREATED=$$(curl -s -X POST -H "X-API-Key: $$API_KEY" -H "Content-Type: application/json" \
+          -d '{"name":"Test User","email":"test@example.com"}' \
+          $$BASE/api/v1/users)
+        echo "Created: $$CREATED"
+        
+        # Create second entity
+        test_endpoint "Create entity" "201" -X POST -H "X-API-Key: $$API_KEY" \
+          -H "Content-Type: application/json" -d '{"name":"Another","email":"another@example.com"}' $$BASE/api/v1/users
+        
+        # Read
+        test_endpoint "Get entity" "200" -H "X-API-Key: $$API_KEY" $$BASE/api/v1/users/1
+        test_endpoint "List entities" "200" -H "X-API-Key: $$API_KEY" $$BASE/api/v1/users
+        
+        # Update (must include all required fields for PUT)
+        test_endpoint "Update entity" "200" -X PUT -H "X-API-Key: $$API_KEY" \
+          -H "Content-Type: application/json" -d '{"name":"Updated","email":"updated@example.com"}' $$BASE/api/v1/users/1
+        
+        # Patch (partial update)
+        test_endpoint "Patch entity" "200" -X PATCH -H "X-API-Key: $$API_KEY" \
+          -H "Content-Type: application/json" -d '{"email":"patched@example.com"}' $$BASE/api/v1/users/1
+        
+        echo ""
+        echo "--- Full-Text Search (SQLite FTS) ---"
+        test_endpoint "FTS search" "200" -H "X-API-Key: $$API_KEY" "$$BASE/api/v1/search?q=test"
+        
+        echo ""
+        echo "--- Graph Operations ---"
+        test_endpoint "Graph stats" "200" -H "X-API-Key: $$API_KEY" $$BASE/api/v1/graph/stats
+        
+        echo ""
+        echo "--- Multi-Tenancy ---"
+        test_endpoint "Tenant create" "201" -X POST -H "X-API-Key: $$API_KEY" \
+          -H "Content-Type: application/json" -d '{"name":"Tenant User","email":"tenant@example.com"}' \
+          $$BASE/api/v1/tenant/acme/users
+        test_endpoint "Tenant list" "200" -H "X-API-Key: $$API_KEY" \
+          $$BASE/api/v1/tenant/acme/users
+        
+        echo ""
+        echo "--- Cleanup ---"
+        test_endpoint "Delete entity" "200" -X DELETE -H "X-API-Key: $$API_KEY" $$BASE/api/v1/users/1
+        
+        echo ""
+        echo "--- Rate Limiting ---"
+        echo "Hitting endpoint rapidly to trigger rate limit (100 req/10s window)..."
+        for i in $$(seq 1 105); do
+          curl -s -o /dev/null -H "X-API-Key: $$API_KEY" $$BASE/api/v1/users
+        done
+        RATE_RESULT=$$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $$API_KEY" $$BASE/api/v1/users)
+        if [ "$$RATE_RESULT" = "429" ]; then
+          echo "✓ Rate limiting triggered (429)"
+          PASS=$$((PASS + 1))
+        else
+          echo "✗ Rate limiting not triggered (got $$RATE_RESULT, expected 429)"
+          FAIL=$$((FAIL + 1))
+        fi
+        
+        echo ""
+        echo "========================================"
+        echo "Results: $$PASS passed, $$FAIL failed"
+        echo "========================================"
+        
+        if [ $$FAIL -gt 0 ]; then
+          exit 1
+        fi
+    profiles:
+      - test
+
+volumes:
+  redis_data:
+  test_data:

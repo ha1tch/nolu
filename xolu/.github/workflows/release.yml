@@ -1,0 +1,225 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., v0.9.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  GONOSUMDB: '*'
+  GOFLAGS: -mod=mod
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux - all platforms supported
+          - goos: linux
+            goarch: amd64
+            suffix: ''
+          - goos: linux
+            goarch: arm64
+            suffix: ''
+          - goos: linux
+            goarch: arm
+            goarm: '7'
+            suffix: ''
+          - goos: linux
+            goarch: '386'
+            suffix: ''
+          
+          # macOS - all platforms supported
+          - goos: darwin
+            goarch: amd64
+            suffix: ''
+          - goos: darwin
+            goarch: arm64
+            suffix: ''
+          
+          # Windows - amd64 and arm64 only (386 has SQLite issues)
+          - goos: windows
+            goarch: amd64
+            suffix: '.exe'
+          - goos: windows
+            goarch: arm64
+            suffix: '.exe'
+          
+          # FreeBSD - all platforms supported
+          - goos: freebsd
+            goarch: amd64
+            suffix: ''
+          - goos: freebsd
+            goarch: arm64
+            suffix: ''
+          - goos: freebsd
+            goarch: '386'
+            suffix: ''
+          
+          # OpenBSD - amd64 and arm64 only (386 has SQLite issues)
+          - goos: openbsd
+            goarch: amd64
+            suffix: ''
+          - goos: openbsd
+            goarch: arm64
+            suffix: ''
+          
+          # NetBSD - amd64 only (386 and arm64 have SQLite issues)
+          - goos: netbsd
+            goarch: amd64
+            suffix: ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build binaries
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: 0
+        run: |
+          # Note: CGO_ENABLED=0 builds use JSONFile storage only
+          # For SQLite support, use the Docker image (built with CGO)
+          SUFFIX="${{ matrix.suffix }}"
+          PLATFORM="${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ -n "${{ matrix.goarm }}" ]; then
+            PLATFORM="${{ matrix.goos }}-${{ matrix.goarch }}v${{ matrix.goarm }}"
+          fi
+          
+          # Build olu
+          BINARY_NAME="olu-${PLATFORM}${SUFFIX}"
+          echo "Building ${BINARY_NAME}..."
+          go build -ldflags="-s -w -X main.Version=${{ steps.version.outputs.version }}" \
+            -o "${BINARY_NAME}" ./cmd/olu
+          sha256sum "${BINARY_NAME}" > "${BINARY_NAME}.sha256"
+          
+          # Build olu-migrate
+          MIGRATE_NAME="olu-migrate-${PLATFORM}${SUFFIX}"
+          echo "Building ${MIGRATE_NAME}..."
+          go build -ldflags="-s -w -X main.Version=${{ steps.version.outputs.version }}" \
+            -o "${MIGRATE_NAME}" ./cmd/olu-migrate
+          sha256sum "${MIGRATE_NAME}" > "${MIGRATE_NAME}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: olu-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}
+          path: |
+            olu-*
+            olu-migrate-*
+          retention-days: 7
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f -name 'olu-*' -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          body: |
+            ## Installation
+            
+            **Docker (recommended for SQLite support):**
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:latest
+            ```
+            
+            **Binary downloads:**
+            These binaries are built without CGO and support JSONFile storage only.
+            For SQLite and FTS5 support, use the Docker image.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker:
+    name: Docker
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

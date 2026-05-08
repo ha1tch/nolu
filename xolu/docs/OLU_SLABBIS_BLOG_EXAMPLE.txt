@@ -1,0 +1,486 @@
+OLU WORKED EXAMPLE — SMALL BLOG WITH SLABBIS CACHE
+====================================================
+
+
+OVERVIEW
+--------
+
+This document walks through setting up olu with slabbis as its cache
+backend, then loading and querying a small blog dataset. Slabbis is a
+server that implements a subset of the Redis RESP protocol; olu's Redis
+cache driver connects to it transparently on localhost:6379.
+
+The blog has four entity types:
+
+  - authors     (who write posts)
+  - posts       (the content)
+  - comments    (attached to posts)
+  - tags        (attached to posts)
+
+Plus page-view counters stored in olu's timeseries subsystem.
+
+Relationships are modelled with structured REF objects so that olu's
+graph index can track them automatically. The graph edges are:
+
+  post ──author_ref──> author       (who wrote this post)
+  comment ──post_ref──> post        (which post this comment is on)
+  tag ──post_ref──> post            (which post this tag applies to)
+
+The walkthrough has seven stages:
+
+  0. Start slabbis
+  1. Start olu with slabbis as cache
+  2. Create entities via the REST API
+  3. Attach REFs (graph edges)
+  4. Load timeseries data
+  5. Register schemas (enables OQL queries)
+  6. Query and verify
+
+
+------------------------------------------------------------------------
+STAGE 0 — START SLABBIS
+------------------------------------------------------------------------
+
+Start slabbis on the default Redis port. It will listen on
+localhost:6379 and speak the RESP protocol.
+
+  ./slabbis
+
+Verify it is responding:
+
+  redis-cli PING
+  # expect: PONG
+
+
+------------------------------------------------------------------------
+STAGE 1 — START OLU WITH SLABBIS AS CACHE
+------------------------------------------------------------------------
+
+Configure olu to use SQLite storage, path-based tenancy with auto-
+registration, full-text search, timeseries, and slabbis as the cache
+backend.
+
+  export OLU_STORAGE_TYPE=sqlite
+  export OLU_DB_PATH=blog.db
+  export OLU_FULLTEXT_ENABLED=true
+  export OLU_TENANT_MODE=path
+  export OLU_TENANT_AUTO_REGISTER=true
+  export OLU_TIMESERIES_ENABLED=true
+  export OLU_CACHE_TYPE=redis
+  export OLU_CACHE_TTL=300
+  export OLU_REDIS_HOST=localhost
+  export OLU_REDIS_PORT=6379
+  export OLU_PORT=9090
+
+  ./bin/olu
+
+At this point olu connects to slabbis on :6379 for all cache operations.
+The health endpoint confirms the server is running:
+
+  curl -s http://localhost:9090/health
+
+With OLU_TENANT_AUTO_REGISTER=true, the "blog" tenant is created
+automatically on the first tenant-scoped request.
+
+Provision timeseries storage for the blog tenant. This first request
+also triggers auto-registration of the "blog" tenant:
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/ts/provision
+
+
+------------------------------------------------------------------------
+STAGE 2 — LOAD ENTITIES
+------------------------------------------------------------------------
+
+We populate the blog with sample data via the REST API. The /save
+endpoint upserts an entity at a caller-specified numeric ID: it creates
+the record on first call and silently overwrites it on subsequent calls
+with the same ID. This makes the load step idempotent — re-running it
+produces the same state.
+
+NOTE: Entities are loaded BEFORE registering schemas (Stage 5). This
+ensures they are stored in the generic entities table with full-text
+search indexing. Registering schemas afterwards creates adapted tables
+and enables OQL without affecting search.
+
+
+### Authors
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/author/save/1 \
+       -H "Content-Type: application/json" \
+       -d '{
+         "name":  "Alice Berger",
+         "email": "alice@example.com",
+         "bio":   "Writes about distributed systems."
+       }'
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/author/save/2 \
+       -H "Content-Type: application/json" \
+       -d '{
+         "name":  "Carlos Mena",
+         "email": "carlos@example.com",
+         "bio":   "Frontend and UX."
+       }'
+
+
+### Posts
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/post/save/1 \
+       -H "Content-Type: application/json" \
+       -d '{
+         "title":      "Getting started with olu",
+         "body":       "Olu is a schema-flexible entity store...",
+         "author_id":  1,
+         "status":     "published",
+         "created_at": "2026-01-10T09:00:00Z"
+       }'
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/post/save/2 \
+       -H "Content-Type: application/json" \
+       -d '{
+         "title":      "Styling with plain CSS",
+         "body":       "CSS has come a long way...",
+         "author_id":  2,
+         "status":     "published",
+         "created_at": "2026-01-14T11:30:00Z"
+       }'
+
+
+### Comments
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/comment/save/1 \
+       -H "Content-Type: application/json" \
+       -d '{
+         "post_id":     1,
+         "author_name": "Bob",
+         "body":        "Very helpful, thanks!",
+         "created_at":  "2026-01-10T10:15:00Z"
+       }'
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/comment/save/2 \
+       -H "Content-Type: application/json" \
+       -d '{
+         "post_id":     1,
+         "author_name": "Dana",
+         "body":        "Does this work with Redis too?",
+         "created_at":  "2026-01-11T14:00:00Z"
+       }'
+
+
+### Tags
+
+Each tag is an entity that references the post it applies to. Tags
+carry both a post_id integer (for OQL queries like "which tags does
+post 1 have?") and a post_ref structured REF (for graph traversal).
+This dual-field pattern mirrors how posts carry both author_id and
+author_ref.
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/tag/save/1 \
+       -H "Content-Type: application/json" \
+       -d '{
+         "name":     "go",
+         "post_id":  1,
+         "post_ref": {"type": "REF", "entity": "post", "id": 1}
+       }'
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/tag/save/2 \
+       -H "Content-Type: application/json" \
+       -d '{
+         "name":     "databases",
+         "post_id":  1,
+         "post_ref": {"type": "REF", "entity": "post", "id": 1}
+       }'
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/tag/save/3 \
+       -H "Content-Type: application/json" \
+       -d '{
+         "name":     "tutorial",
+         "post_id":  1,
+         "post_ref": {"type": "REF", "entity": "post", "id": 1}
+       }'
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/tag/save/4 \
+       -H "Content-Type: application/json" \
+       -d '{
+         "name":     "css",
+         "post_id":  2,
+         "post_ref": {"type": "REF", "entity": "post", "id": 2}
+       }'
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/tag/save/5 \
+       -H "Content-Type: application/json" \
+       -d '{
+         "name":     "frontend",
+         "post_id":  2,
+         "post_ref": {"type": "REF", "entity": "post", "id": 2}
+       }'
+
+
+------------------------------------------------------------------------
+STAGE 3 — ATTACH REFS (GRAPH EDGES)
+------------------------------------------------------------------------
+
+Tags already carry their post_id and post_ref from Stage 2. Posts and
+comments still need their REFs attached. Relationships are declared
+using structured REF objects (see MANUAL.md, "Reference Format"):
+
+  {"type": "REF", "entity": "<entity>", "id": <id>}
+
+Olu indexes each REF as a directed graph edge on write.
+
+  # Post 1 written by author 1
+  curl -s -X PATCH http://localhost:9090/api/v1/tenant/blog/post/1 \
+       -H "Content-Type: application/json" \
+       -d '{"author_ref": {"type": "REF", "entity": "author", "id": 1}}'
+
+  # Post 2 written by author 2
+  curl -s -X PATCH http://localhost:9090/api/v1/tenant/blog/post/2 \
+       -H "Content-Type: application/json" \
+       -d '{"author_ref": {"type": "REF", "entity": "author", "id": 2}}'
+
+  # Comment 1 on post 1
+  curl -s -X PATCH http://localhost:9090/api/v1/tenant/blog/comment/1 \
+       -H "Content-Type: application/json" \
+       -d '{"post_ref": {"type": "REF", "entity": "post", "id": 1}}'
+
+  # Comment 2 on post 1
+  curl -s -X PATCH http://localhost:9090/api/v1/tenant/blog/comment/2 \
+       -H "Content-Type: application/json" \
+       -d '{"post_ref": {"type": "REF", "entity": "post", "id": 1}}'
+
+After this stage the graph contains 11 nodes and 9 edges:
+  2 post->author edges (author_ref)
+  2 comment->post edges (post_ref)
+  5 tag->post edges (post_ref)
+
+
+------------------------------------------------------------------------
+STAGE 4 — LOAD TIMESERIES DATA
+------------------------------------------------------------------------
+
+Page view counts are stored in olu's timeseries subsystem. Define a
+timeline with one dimension (post_id) and one numeric field (views).
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/ts/timelines \
+       -H "Content-Type: application/json" \
+       -d '{
+         "id":             1,
+         "dims":           1,
+         "name":           "page_views",
+         "retention_days": 365
+       }'
+
+Write view count events:
+
+  # Post 1 — 4821 views
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/ts/events \
+       -H "Content-Type: application/json" \
+       -d '{
+         "timeline": 1,
+         "dims":     [1],
+         "time":     "2026-03-04T00:00:00Z",
+         "nums":     [4821]
+       }'
+
+  # Post 2 — 1093 views
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/ts/events \
+       -H "Content-Type: application/json" \
+       -d '{
+         "timeline": 1,
+         "dims":     [2],
+         "time":     "2026-03-04T00:00:00Z",
+         "nums":     [1093]
+       }'
+
+
+------------------------------------------------------------------------
+STAGE 5 — REGISTER SCHEMAS
+------------------------------------------------------------------------
+
+Schemas tell olu the structure of each entity type. They enable OQL
+queries (which validate entity existence before execution) and create
+adapted tables for better query performance.
+
+Schemas are registered AFTER loading entities. This preserves full-text
+search indexing, which uses the generic entities table. The adapted
+table migration runs on registration and carries existing data forward.
+
+  curl -s -X POST http://localhost:9090/api/v1/schema/author \
+       -H "Content-Type: application/json" \
+       -d '{
+         "type": "object",
+         "properties": {
+           "name":  {"type": "string"},
+           "email": {"type": "string"},
+           "bio":   {"type": "string"}
+         },
+         "required": ["name"]
+       }'
+
+  curl -s -X POST http://localhost:9090/api/v1/schema/post \
+       -H "Content-Type: application/json" \
+       -d '{
+         "type": "object",
+         "properties": {
+           "title":     {"type": "string"},
+           "body":      {"type": "string"},
+           "author_id": {"type": "integer"},
+           "status":    {"type": "string"}
+         },
+         "required": ["title"]
+       }'
+
+  curl -s -X POST http://localhost:9090/api/v1/schema/comment \
+       -H "Content-Type: application/json" \
+       -d '{
+         "type": "object",
+         "properties": {
+           "post_id":     {"type": "integer"},
+           "author_name": {"type": "string"},
+           "body":        {"type": "string"}
+         },
+         "required": ["body"]
+       }'
+
+  curl -s -X POST http://localhost:9090/api/v1/schema/tag \
+       -H "Content-Type: application/json" \
+       -d '{
+         "type": "object",
+         "properties": {
+           "name": {"type": "string"}
+         },
+         "required": ["name"]
+       }'
+
+
+------------------------------------------------------------------------
+STAGE 6 — QUERY AND VERIFY
+------------------------------------------------------------------------
+
+Now exercise olu's query features. Every request below hits slabbis
+transparently for cache reads/writes.
+
+
+### Entity counts
+
+  curl -s "http://localhost:9090/api/v1/tenant/blog/author?per_page=1" \
+    | grep total_items
+  # expect: 2
+
+  curl -s "http://localhost:9090/api/v1/tenant/blog/post?per_page=1" \
+    | grep total_items
+  # expect: 2
+
+  curl -s "http://localhost:9090/api/v1/tenant/blog/comment?per_page=1" \
+    | grep total_items
+  # expect: 2
+
+  curl -s "http://localhost:9090/api/v1/tenant/blog/tag?per_page=1" \
+    | grep total_items
+  # expect: 5
+
+
+### Full-text search
+
+  curl -s "http://localhost:9090/api/v1/tenant/blog/search?q=olu&entity=post"
+  # expect: 1 result (post 1, "Getting started with olu")
+
+
+### Timeseries query
+
+  curl -s "http://localhost:9090/api/v1/tenant/blog/ts/events\
+?timeline=1&dims=1&from=2026-03-04T00:00:00Z&to=2026-03-04T00:01:00Z"
+  # expect: count=1, nums=[4821]
+
+
+### OQL query
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/oql/query \
+       -H "Content-Type: application/json" \
+       -d '{"query": "SELECT title, status FROM post ORDER BY created_at DESC"}'
+  # expect: "Styling with plain CSS", "Getting started with olu"
+
+Which tags does post 1 have?
+
+  curl -s -X POST http://localhost:9090/api/v1/tenant/blog/oql/query \
+       -H "Content-Type: application/json" \
+       -d '{"query": "SELECT name FROM tag WHERE post_id = 1 ORDER BY name"}'
+  # expect: databases, go, tutorial
+
+
+### Graph traversal
+
+Node IDs in a multi-tenant graph use the format "XXXX@entity:id" where
+XXXX is the hex tenant ID. The "blog" tenant was auto-registered as
+ID 1, so its nodes are prefixed "0001@".
+
+Graph statistics:
+
+  curl -s "http://localhost:9090/api/v1/graph/stats"
+  # expect: node_count=11, edge_count=9
+
+Which author wrote post 1?
+
+  curl -s "http://localhost:9090/api/v1/graph/0001@post:1/out"
+  # expect: 1 edge -> 0001@author:1 [author_ref]
+
+What references post 1? (comments and tags)
+
+  curl -s "http://localhost:9090/api/v1/graph/0001@post:1/in"
+  # expect: 5 edges <- comment:1, comment:2, tag:1, tag:2, tag:3
+
+Which posts does author 1 have?
+
+  curl -s "http://localhost:9090/api/v1/graph/0001@author:1/in"
+  # expect: 1 edge <- 0001@post:1 [author_ref]
+
+
+### Export
+
+  curl -s "http://localhost:9090/api/v1/export" -o blog-export.zip
+
+
+### Verify with iolu
+
+The iolu admin CLI can inspect the tenant without the server running:
+
+  iolu tenant info --db blog.db --name blog
+  # Shows entity counts by type and timeseries provisioning status
+
+
+------------------------------------------------------------------------
+NOTES
+------------------------------------------------------------------------
+
+1. Slabbis as cache backend
+   Olu's Redis cache driver uses standard RESP commands (GET, SET, DEL,
+   etc.). Any server that implements this subset — Redis, slabbis, or
+   another RESP-compatible server — works as a drop-in cache backend.
+   The application does not need to know which implementation is running.
+
+2. Schema registration order
+   Schemas should be registered AFTER loading initial entity data. This
+   ensures entities are stored in the generic entities table with
+   full-text search indexing. Schema registration creates adapted tables
+   and migrates existing data without losing FTS entries.
+
+3. Tag modelling
+   Tags are modelled as entities with both a post_id integer (for OQL
+   queries) and a post_ref structured REF (for graph traversal). This
+   dual-field pattern mirrors how posts carry both author_id and
+   author_ref. Each tag-post association is a single REF, which olu's
+   graph index handles automatically.
+
+4. Author_id field vs. author_ref
+   The author_id integer field on posts is kept for convenience. The
+   author_ref structured REF is additive: it enables graph traversal
+   and reference embedding without replacing the flat field.
+
+5. Cache observability
+   You can inspect what olu has cached by connecting to slabbis directly
+   with redis-cli:
+
+     redis-cli KEYS "*"
+
+   This is useful for verifying that olu's cache operations are reaching
+   slabbis as expected.
