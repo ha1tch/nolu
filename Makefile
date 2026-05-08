@@ -6,10 +6,11 @@ NATS_URL    ?= nats://localhost:4222
 NATS_STREAM ?= NOLU_EVENTS
 
 
-.PHONY: all build demo demo1 demo2 demo3 demo4 demo-nats test test-verbose vet check verify help \
+.PHONY: all build demo demo1 demo2 demo3 demo4 demo5 demo6 demo-nats test test-verbose vet check verify help \
         distclean release \
-        run-demo1 run-demo2 run-demo3 run-demo4 \
-        run-docker-demo2 run-docker-demo3 run-docker-demo4 \
+        run-demo1 run-demo2 run-demo3 run-demo4 run-demo5 run-demo6 \
+        run-docker-demo2 run-docker-demo3 run-docker-demo4 run-docker-demo5 run-docker-demo6 \
+        demo5-up demo5-down demo6-up demo6-down docker-demo5 docker-demo6 \
         vendor tidy test-e2e test-e2e-health test-e2e-xolureg test-e2e-hotswap \
         demo1-up demo2-up demo3-up demo4-up \
         demo1-down demo2-down demo3-down demo4-down \
@@ -32,7 +33,9 @@ build:
 	go build -o $(BINARY_DIR)/nolu-demo2 ./cmd/demo2
 	go build -o $(BINARY_DIR)/nolu-demo3 ./cmd/demo3
 	go build -o $(BINARY_DIR)/nolu-demo4 ./cmd/demo4
-	@echo "Built: nolu nolu-proxy nolu-demo nolu-demo1 nolu-demo2 nolu-demo3 nolu-demo4"
+	go build -o $(BINARY_DIR)/nolu-demo5 ./cmd/demo5
+	go build -o $(BINARY_DIR)/nolu-demo6 ./cmd/demo6
+	@echo "Built: nolu nolu-proxy nolu-demo nolu-demo1 nolu-demo2 nolu-demo3 nolu-demo4 nolu-demo5 nolu-demo6"
 
 # ── Local targets (no Docker required) ───────────────────────────────────────
 
@@ -173,6 +176,44 @@ docker-demo4:
 	@echo "Running demo4 in Docker (large federation)..."
 	docker compose --profile demo4 run --rm demo4
 
+demo5: build
+	@echo "Running demo5 (cross-organisation asset transfer)..."
+	$(BINARY_DIR)/nolu-demo5 \
+		-mfg=http://localhost:9090 \
+		-dist=http://localhost:9091 \
+		-repair=http://localhost:9092 \
+		-registry=http://localhost:9093
+
+demo6: build
+	@echo "Running demo6 (live hotswap with proxy traffic continuity)..."
+	$(BINARY_DIR)/nolu-demo6 \
+		-hub-a=http://localhost:9090 \
+		-hub-b=http://localhost:9091 \
+		-registry=http://localhost:9092 \
+		-nolu=http://localhost:7070 \
+		-proxy=http://localhost:7070/proxy
+
+demo5-up: docker-build
+	docker compose --profile demo5 up -d
+	@echo "Demo5 stack up. Run 'make docker-demo5'."
+
+demo5-down: ; docker compose --profile demo5 down -v
+
+demo6-up: docker-build
+	docker compose --profile demo6 up -d
+	@echo "Demo6 stack up. Waiting 5s for nolu to initialise..."
+	@sleep 5
+
+demo6-down: ; docker compose --profile demo6 down -v
+
+docker-demo5:
+	@echo "Running demo5 in Docker (cross-organisation transfer)..."
+	docker compose --profile demo5 run --rm demo5
+
+docker-demo6:
+	@echo "Running demo6 in Docker (live hotswap)..."
+	docker compose --profile demo6 run --rm demo6
+
 # ── Compound one-shot targets ─────────────────────────────────────────────────
 # Bring up the stack, run the demo, tear down. Exit code reflects the demo.
 
@@ -186,6 +227,18 @@ run-demo3: demo3-up
 
 run-demo4: demo4-up
 	$(MAKE) demo4; STATUS=$$?; $(MAKE) demo4-down; exit $$STATUS
+
+run-demo5: demo5-up
+	$(MAKE) demo5; STATUS=$$?; $(MAKE) demo5-down; exit $$STATUS
+
+run-demo6: demo6-up
+	$(MAKE) demo6; STATUS=$$?; $(MAKE) demo6-down; exit $$STATUS
+
+run-docker-demo5: demo5-up
+	$(MAKE) docker-demo5; STATUS=$$?; $(MAKE) demo5-down; exit $$STATUS
+
+run-docker-demo6: demo6-up
+	$(MAKE) docker-demo6; STATUS=$$?; $(MAKE) demo6-down; exit $$STATUS
 
 # Docker variants (demo runs inside the nolu-net network).
 run-docker-demo2: demo2-up

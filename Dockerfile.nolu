@@ -1,0 +1,12 @@
+FROM golang:1.22-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY vendor/ vendor/
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -o /bin/nolu ./cmd/nolu
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /bin/nolu /usr/local/bin/nolu
+EXPOSE 7070
+ENTRYPOINT ["/usr/local/bin/nolu"]

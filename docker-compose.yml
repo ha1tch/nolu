@@ -48,6 +48,15 @@ volumes:
   nats-d4-3-data:
   nats-d4-4-data:
   nats-d4-5-data:
+  # Demo 5
+  xolu-d5-mfg-data:
+  xolu-d5-dist-data:
+  xolu-d5-repair-data:
+  xolu-d5-registry-data:
+  # Demo 6
+  xolu-d6-hub-a-data:
+  xolu-d6-hub-b-data:
+  xolu-d6-registry-data:
 
 services:
 
@@ -472,3 +481,171 @@ services:
                  xolu-d4-eu, xolu-d4-us, xolu-d4-apac,
                  xolu-d4-service, xolu-d4-registry]
     restart: "no"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEMO 5 — Cross-organisation asset transfer with full negotiation lifecycle
+  #          Three sovereign xolu instances. Zero shared data. nolu is the only
+  #          coordination point.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # VendoCorp: manufacturer. Path mode (single org, trusted clients).
+  xolu-d5-mfg:
+    profiles: [demo5]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/mfg.db
+      OLU_PORT: "9090"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: path
+      OLU_TENANT_AUTO_REGISTER: "true"
+    ports: ["9090:9090"]
+    volumes: [xolu-d5-mfg-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  # RetailChain: distributor / vending operator.
+  xolu-d5-dist:
+    profiles: [demo5]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/dist.db
+      OLU_PORT: "9091"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: path
+      OLU_TENANT_AUTO_REGISTER: "true"
+    ports: ["9091:9091"]
+    volumes: [xolu-d5-dist-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  # ServiceCo: repair depot.
+  xolu-d5-repair:
+    profiles: [demo5]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/repair.db
+      OLU_PORT: "9092"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: path
+      OLU_TENANT_AUTO_REGISTER: "true"
+    ports: ["9092:9092"]
+    volumes: [xolu-d5-repair-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  # nolu's own backing store for demo5 registry records.
+  xolu-d5-registry:
+    profiles: [demo5]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/registry.db
+      OLU_PORT: "9093"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: path
+      OLU_TENANT_AUTO_REGISTER: "true"
+    ports: ["9093:9093"]
+    volumes: [xolu-d5-registry-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  demo5:
+    profiles: [demo5]
+    build: {context: ., dockerfile: Dockerfile}
+    entrypoint: ["/usr/local/bin/nolu-demo5"]
+    command:
+      - "-mfg=http://xolu-d5-mfg:9090"
+      - "-dist=http://xolu-d5-dist:9091"
+      - "-repair=http://xolu-d5-repair:9092"
+      - "-registry=http://xolu-d5-registry:9093"
+    networks: [nolu-net]
+    depends_on: [xolu-d5-mfg, xolu-d5-dist, xolu-d5-repair, xolu-d5-registry]
+    restart: "no"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # DEMO 6 — Live hotswap with traffic continuity through the proxy
+  #          Reads continue uninterrupted while a tenant migrates between
+  #          xolu instances. The proxy handles 307 redirects transparently.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # Hub-A: initial home of the vendocorp tenant.
+  xolu-d6-hub-a:
+    profiles: [demo6]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/hub-a.db
+      OLU_PORT: "9090"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: path
+      OLU_TENANT_AUTO_REGISTER: "true"
+    ports: ["9090:9090"]
+    volumes: [xolu-d6-hub-a-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  # Hub-B: migration target.
+  xolu-d6-hub-b:
+    profiles: [demo6]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/hub-b.db
+      OLU_PORT: "9091"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: path
+      OLU_TENANT_AUTO_REGISTER: "true"
+    ports: ["9091:9091"]
+    volumes: [xolu-d6-hub-b-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  # nolu's backing store for demo6 registry records.
+  xolu-d6-registry:
+    profiles: [demo6]
+    image: ghcr.io/ha1tch/xolu:latest
+    environment:
+      OLU_STORAGE_TYPE: sqlite
+      OLU_DB_PATH: /data/registry.db
+      OLU_PORT: "9092"
+      OLU_LOG_LEVEL: warn
+      OLU_TENANT_MODE: path
+      OLU_TENANT_AUTO_REGISTER: "true"
+    ports: ["9092:9092"]
+    volumes: [xolu-d6-registry-data:/data]
+    networks: [nolu-net]
+    restart: unless-stopped
+
+  demo6:
+    profiles: [demo6]
+    build: {context: ., dockerfile: Dockerfile}
+    entrypoint: ["/usr/local/bin/nolu-demo6"]
+    command:
+      - "-hub-a=http://xolu-d6-hub-a:9090"
+      - "-hub-b=http://xolu-d6-hub-b:9091"
+      - "-registry=http://xolu-d6-registry:9092"
+      - "-nolu=http://nolu-d6:7070"
+      - "-proxy=http://nolu-d6:7070/proxy"
+    networks: [nolu-net]
+    depends_on: [xolu-d6-hub-a, xolu-d6-hub-b, xolu-d6-registry, nolu-d6]
+    restart: "no"
+
+  # nolu instance for demo6 — runs embedded proxy, XoluRegistry storage.
+  nolu-d6:
+    profiles: [demo6]
+    build: {context: ., dockerfile: Dockerfile.nolu}
+    environment:
+      NOLU_REGISTRY_HOST: registry.demo6.local
+      NOLU_LISTEN_ADDR: ":7070"
+      NOLU_STORAGE_TYPE: xolu
+      NOLU_XOLU_URL: "http://xolu-d6-registry:9092"
+      NOLU_BUS_TYPE: memory
+      NOLU_HOTSWAP_STORAGE: memory
+      NOLU_LOG_LEVEL: info
+    ports: ["7070:7070"]
+    networks: [nolu-net]
+    depends_on: [xolu-d6-hub-a, xolu-d6-hub-b, xolu-d6-registry]
+    restart: unless-stopped

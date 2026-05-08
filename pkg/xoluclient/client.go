@@ -41,6 +41,12 @@ func New(baseURL string, tenantID uint16) *Client {
 }
 
 // Healthy returns nil if the xolu instance responds to GET /health.
+// BaseURL returns the xolu instance base URL.
+func (c *Client) BaseURL() string { return c.baseURL }
+
+// TenantName returns the tenant name if set, or empty string.
+func (c *Client) TenantName() string { return c.tenantName }
+
 func (c *Client) Healthy(ctx context.Context) error {
 	resp, err := c.get(ctx, "/health")
 	if err != nil {

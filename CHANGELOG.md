@@ -559,3 +559,24 @@ next milestone implements MemoryRegistry and wires the HTTP API.
   (package-qualified call fixed)
 - All hotswap managers now use ListByInstanceAndTenant instead of filterByTenant
   no-op; multi-tenant hub hotswaps are now correct, not merely safe
+
+## 0.7.8 — 2026-05-08
+
+### Added
+
+- `cmd/demo5/main.go` — cross-organisation asset transfer demo: 3 sovereign xolu
+  instances (manufacturer, distributor, repair depot), XoluRegistry backing,
+  5 devices manufactured and registered; bilateral sale with one rejection;
+  repair cycle with history portability negotiation; retirement with 410 verify;
+  final audit resolving all 5 GlobalIDs
+- `cmd/demo6/main.go` — live hotswap with traffic continuity demo: 2 xolu hubs,
+  XoluRegistry backing, embedded hotswap manager with tenant directory;
+  10 devices registered on hub-a; background reader at 20 req/s through proxy;
+  operator-confirmed hotswap (auto_advance=false); real-time state progression
+  printed as machine advances; read error count (expected: 0); final verification
+  all 10 GlobalIDs resolve to hub-b
+- `docker-compose.yml` — demo5 and demo6 profiles with xolu services
+- `Dockerfile.nolu` — standalone nolu service image for demo6
+- `Dockerfile` — nolu-demo5 and nolu-demo6 binaries added
+- `Makefile` — demo5/demo6 run, docker, up/down, and compound targets
+- `pkg/xoluclient/client.go` — BaseURL() and TenantName() accessor methods

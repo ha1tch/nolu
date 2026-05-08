@@ -14,6 +14,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -o /bin/nolu-demo1 ./cmd/demo1
 RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -o /bin/nolu-demo2 ./cmd/demo2
 RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -o /bin/nolu-demo3 ./cmd/demo3
 RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -o /bin/nolu-demo4 ./cmd/demo4
+RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -o /bin/nolu-demo5 ./cmd/demo5
+RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -o /bin/nolu-demo6 ./cmd/demo6
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM alpine:3.20
@@ -27,6 +29,8 @@ COPY --from=builder /bin/nolu-demo1 /usr/local/bin/nolu-demo1
 COPY --from=builder /bin/nolu-demo2 /usr/local/bin/nolu-demo2
 COPY --from=builder /bin/nolu-demo3 /usr/local/bin/nolu-demo3
 COPY --from=builder /bin/nolu-demo4 /usr/local/bin/nolu-demo4
+COPY --from=builder /bin/nolu-demo5 /usr/local/bin/nolu-demo5
+COPY --from=builder /bin/nolu-demo6 /usr/local/bin/nolu-demo6
 
 EXPOSE 7070
 
