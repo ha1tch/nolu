@@ -1,32 +1,11 @@
 # Dockerfile.iolu
 #
-# Builds the iolu administrative CLI from the xolu source tree.
-# Used as an init container to pre-register tenants in strict-mode xolu
-# instances before the main server starts.
-#
-# Build context must be the xolu source directory:
-#   docker build -f ../nolu/Dockerfile.iolu -t nolu-iolu ../xolu
+# Thin wrapper that overrides the entrypoint of the xolu runtime image
+# to run iolu instead of olu. Both binaries ship in ghcr.io/ha1tch/xolu:latest.
 #
 # Usage in compose (init container pattern):
 #   entrypoint: ["/usr/local/bin/iolu"]
 #   command: ["tenant", "create", "--db", "/data/olu.db", "--name", "mytenant"]
 
-FROM golang:1.22-alpine AS builder
-
-ENV GONOSUMDB=*
-ENV CGO_ENABLED=0
-ENV GOOS=linux
-
-WORKDIR /build
-COPY go.mod go.sum ./
-
-# modernc.org/sqlite is pure Go; no CGO required.
-RUN go mod download
-
-COPY . .
-RUN go build -trimpath -ldflags="-s -w" -o /out/iolu ./cmd/iolu
-
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
-COPY --from=builder /out/iolu /usr/local/bin/iolu
+FROM ghcr.io/ha1tch/xolu:latest
 ENTRYPOINT ["/usr/local/bin/iolu"]

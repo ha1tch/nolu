@@ -122,8 +122,8 @@ services:
   xolu-hub-init:
     profiles: [demo2]
     build:
-      context: ./xolu
-      dockerfile: ../Dockerfile.iolu
+      context: .
+      dockerfile: Dockerfile.iolu
     command:
       - db
       - init
@@ -349,8 +349,8 @@ services:
   xolu-d4-eu-init:
     profiles: [demo4]
     build:
-      context: ./xolu
-      dockerfile: ../Dockerfile.iolu
+      context: .
+      dockerfile: Dockerfile.iolu
     command: [db, init, --db=/data/eu.db, --graph,
               --tenant=euro-vendo:1, --tenant=euro-retail:2]
     volumes: [xolu-d4-eu-data:/data]
@@ -379,8 +379,8 @@ services:
   xolu-d4-us-init:
     profiles: [demo4]
     build:
-      context: ./xolu
-      dockerfile: ../Dockerfile.iolu
+      context: .
+      dockerfile: Dockerfile.iolu
     command: [db, init, --db=/data/us.db, --graph,
               --tenant=us-vendo:1, --tenant=us-retail:2]
     volumes: [xolu-d4-us-data:/data]
@@ -409,8 +409,8 @@ services:
   xolu-d4-apac-init:
     profiles: [demo4]
     build:
-      context: ./xolu
-      dockerfile: ../Dockerfile.iolu
+      context: .
+      dockerfile: Dockerfile.iolu
     command: [db, init, --db=/data/apac.db, --graph,
               --tenant=apac-vendo:1, --tenant=apac-retail:2]
     volumes: [xolu-d4-apac-data:/data]

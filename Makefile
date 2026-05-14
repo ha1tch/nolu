@@ -11,7 +11,7 @@ NATS_STREAM ?= NOLU_EVENTS
         run-demo1 run-demo2 run-demo3 run-demo4 run-demo5 run-demo6 \
         run-docker-demo2 run-docker-demo3 run-docker-demo4 run-docker-demo5 run-docker-demo6 \
         demo5-up demo5-down demo6-up demo6-down docker-demo5 docker-demo6 \
-        vendor tidy test-e2e test-e2e-health test-e2e-xolureg test-e2e-hotswap \
+        tidy test-e2e test-e2e-health test-e2e-xolureg test-e2e-hotswap \
         demo1-up demo2-up demo3-up demo4-up \
         demo1-down demo2-down demo3-down demo4-down \
         docker-build docker-up docker-down docker-demo \
@@ -112,18 +112,11 @@ verify:
 
 # Build the nolu Docker image.
 # Vendors dependencies first so the Docker build has no network dependency.
-docker-build: vendor
+docker-build:
 	docker compose build
 
-# Vendor all dependencies into ./vendor for use in Docker builds.
-# GOTOOLCHAIN=local prevents go mod vendor from switching to a newer toolchain
-# and silently rewriting the go directive in go.mod.
-vendor:
-	GOTOOLCHAIN=local go mod vendor
-	@echo "Vendored dependencies into ./vendor"
-
 # Tidy go.mod and go.sum, then pin the go directive back to 1.22.
-# Run this after adding or updating dependencies, then commit vendor/.
+# Run this after adding or updating dependencies.
 tidy:
 	GOTOOLCHAIN=local go mod tidy
 	@python3 -c "\
@@ -133,7 +126,6 @@ src = re.sub(r'^go .*$$', 'go 1.22', src, flags=re.M); \
 src = '\n'.join(l for l in src.splitlines() if not l.startswith('toolchain ')); \
 open('go.mod','w').write(src+'\n'); \
 print('go.mod: go directive pinned to 1.22')"
-	@$(MAKE) vendor
 
 # ── Per-demo stack management ─────────────────────────────────────────────────
 
@@ -284,15 +276,13 @@ distclean: clean
 # Cut a release zip. Cleans all artifacts first.
 # Usage: make release VERSION=0.4.3
 # The VERSION variable must match the top entry in CHANGELOG.md.
-release: distclean vendor
+release: distclean
 	$(eval V := $(or $(VERSION),$(shell cat VERSION)))
 	@echo "Releasing nolu-$(V)..."
 	@grep -q "^## $(V)" CHANGELOG.md || (echo "ERROR: $(V) not in CHANGELOG.md" && exit 1)
 	@grep -q "^$(V)" VERSION || (echo "ERROR: VERSION file says $$(cat VERSION), not $(V)" && exit 1)
 	@grep -q '"$(V)"' pkg/version/version.go || (echo "ERROR: version.go not updated to $(V)" && exit 1)
-	cd .. && zip -r nolu-$(V).zip nolu/ 		--exclude "nolu/.git/*" 		--exclude "nolu/bin/*" 		--exclude "nolu/*.bak" 		--exclude "nolu/*.tmp" 		--exclude "nolu/*.out" 		--exclude "nolu/*.test" 		--exclude "nolu/*.zip" \
-		--exclude "nolu/xolu/.git/*" \
-		--exclude "nolu/xolu/bin/*"
+	cd .. && zip -r nolu-$(V).zip nolu/ 		--exclude "nolu/.git/*" 		--exclude "nolu/bin/*" 		--exclude "nolu/*.bak" 		--exclude "nolu/*.tmp" 		--exclude "nolu/*.out" 		--exclude "nolu/*.test" 		--exclude "nolu/*.zip"
 	@echo "Created: ../nolu-$(V).zip"
 
 version:
@@ -309,8 +299,7 @@ help:
 	@printf '\n'
 	@printf '\033[1mBUILD\033[0m\n'
 	@printf '  \033[36m%-22s\033[0m %s\n' "build"        "Compile nolu and nolu-demo binaries into ./bin"
-	@printf '  \033[36m%-22s\033[0m %s\n' "vendor"       "Vendor dependencies into ./vendor (required before docker-build)"
-	@printf '  \033[36m%-22s\033[0m %s\n' "tidy"         "go mod tidy + pin go directive to 1.22 + re-vendor" 
+	@printf '  \033[36m%-22s\033[0m %s\n' "tidy"         "go mod tidy + pin go directive to 1.22"
 	@printf '  \033[36m%-22s\033[0m %s\n' "clean"        "Remove ./bin"
 	@printf '  \033[36m%-22s\033[0m %s\n' "distclean"    "Remove ./bin + all *.bak *.tmp *.out *.test artifacts"
 	@printf '  \033[36m%-22s\033[0m %s\n' "release"      "Cut a clean release zip — verifies CHANGELOG + version.go"
@@ -328,7 +317,7 @@ help:
 	@printf '  \033[36m%-22s\033[0m %s\n' "demo-nats"    "Run clearinghouse scenario against local NATS (see NATS_URL)"
 	@printf '\n'
 	@printf '\033[1mDOCKER\033[0m\n'
-	@printf '  \033[36m%-22s\033[0m %s\n' "docker-build"     "Build nolu Docker image"
+	@printf '  \033[36m%-22s\033[0m %s\n' "docker-build"     "Build nolu Docker image (iolu pulled from github.com/ha1tch/xolu)"
 	@printf '  \033[36m%-22s\033[0m %s\n' "docker-up"        "Start NATS + 3 xolu instances + nolu-registry (detached)"
 	@printf '  \033[36m%-22s\033[0m %s\n' "docker-demo"      "Run demo against live Docker Compose stack"
 	@printf '  \033[36m%-22s\033[0m %s\n' "docker-verify"    "docker-up + docker-demo + exit-code check"
